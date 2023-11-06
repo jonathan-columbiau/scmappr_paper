@@ -1,0 +1,636 @@
+ ---
+title: "bpcells_utils_mapping.Rmd"
+author: "Jonathan Algoo"
+date: "2023-09-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(magrittr)
+library(stats)
+library(data.tree)
+library(tidytree)
+library(ggtree)
+library(treeio)
+library(e1071)
+library(MASS)
+library(caret)
+library(glmnet)
+library(ranger)
+library(dplyr)
+library(tidyr)
+library(Matrix)
+library(testthat)
+library(BPCells)
+require(stringr)
+options("print.matrix" = FALSE)
+```
+
+create_all_models is a function that takes in a ge reference dataset that has been transformed using PCA, and a set of celltype labels in factor format, and produces a set of 10 models that differentiates the celltypes. 
+Input: 1) PC-transformed reference dataset 2)Factor vector of cell-type labels
+Output: A list, where each element in the list is a model that classifies cells to one of the celltype labels given as input. 
+```{r}
+CreateAllModels <- function(reference_dataset, celltype_labels) {
+  output_model_list <- vector(mode = "list", length = 10)
+  names(output_model_list) <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf", "qda")
+  function_list <- c(pairwise_linear_svm,pairwise_polynomial_svm,pairwise_naive_bayes,pairwise_ridge,pairwise_lasso,pairwise_elastic_net,pairwise_lda,pairwise_knn,pairwise_random_forest,pairwise_qda)
+  for (i in 1:length(function_list)) {
+    model <- function_list[[i]](reference_dataset, celltype_labels)
+    output_model_list[[i]] <- model
+  }
+  #return the list of models
+  output_model_list
+}
+```
+
+LDA Algorithm
+```{r}
+pairwise_lda <- function(reference_dataset, celltype_labels) {
+    #upsample minority class to make class frequencies equal
+    reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
+    pairwise_model <- MASS::lda(celltype_labels ~ ., data = reference_dataset)
+    pairwise_model
+}
+```
+
+
+QDA Algorithm
+```{r}
+#from MASS package
+pairwise_qda <- function(reference_dataset, celltype_labels) {
+    #upsample minority class to make class frequencies equal
+    reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
+    pairwise_model <- qda(celltype_labels ~ ., data = reference_dataset)
+    pairwise_model
+}
+```
+
+Naive Bayes  Algorithm
+```{r}
+pairwise_naive_bayes <- function(reference_dataset, celltype_labels) {
+    #upsample minority class to make class frequencies equal
+    reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
+    pairwise_model <- naiveBayes(celltype_labels ~ ., data = reference_dataset)
+    pairwise_model
+}
+```
+
+Linear SVM  algorithm
+```{r}
+#e1071 package
+pairwise_linear_svm <- function(reference_dataset, celltype_labels) {
+    reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels")
+    pairwise_model <- svm(celltype_labels ~ ., data = reference_dataset, kernel = "linear", scale = F)
+    pairwise_model
+}
+```
+
+Polynomial SVM  algorithm
+```{r}
+#e1071 package
+pairwise_polynomial_svm <- function(reference_dataset, celltype_labels) {
+    reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels")
+    pairwise_model <- svm(celltype_labels ~ ., data = reference_dataset, kernel = "polynomial", scale = F)
+    pairwise_model
+}
+```
+
+
+Elastic Net Algorithm
+```{r}
+#glmnet package
+pairwise_elastic_net <- function(reference_dataset, celltype_labels) {
+    upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
+    celltype_labels <- upsampled_dataset[["y"]]
+    reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
+    pairwise_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "binomial", alpha = .5)
+    pairwise_model
+}
+```
+
+Lasso Regression Algorithm
+```{r}
+#glmnet package
+pairwise_lasso <- function(reference_dataset, celltype_labels) {
+    upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
+    celltype_labels <- upsampled_dataset[["y"]]
+    reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
+    pairwise_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "binomial", alpha = 1)
+    pairwise_model
+}
+```
+
+
+Ridge Regression algorithm
+```{r}
+#glmnet package
+pairwise_ridge <- function(reference_dataset, celltype_labels) {
+    upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
+    celltype_labels <- upsampled_dataset[["y"]]
+    reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
+    pairwise_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "binomial", alpha = 0)
+    pairwise_model
+}
+```
+
+Random Forest Algorithm
+```{r}
+pairwise_random_forest <- function(reference_dataset, celltype_labels) {
+  #upsample minority class to make class frequencies equal
+  reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
+    pairwise_model <- ranger(celltype_labels ~ ., data = reference_dataset, num.trees = 500, classification = T, replace = T)
+    pairwise_model
+}
+```
+
+K nearest neighbors pairwise algorithm
+```{r}
+pairwise_knn <- function(reference_dataset, celltype_labels) {
+  #upsample minority class to make class frequencies equal
+    reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
+    pairwise_model <- caret::knn3(celltype_labels ~ ., data = reference_dataset, k = 5)
+    pairwise_model
+}
+```
+
+
+Pairwise combinations - helper function - return list of lists with all possible pairwise combinations of clusters, given vector with cluster names should end up with 4950 combinations from 100 clusters
+```{r message=FALSE, warning=FALSE}
+pairwise_combinations <- function(cluster.names) {
+  name_list <- list()
+  cluster.names <- unique(cluster.names)
+  list_index_to_add = 1
+  for (i in 1:(length(cluster.names))) {
+    for(j in (i + 1): length(cluster.names)) {
+      if(i != length(cluster.names)) {
+      name_list[[list_index_to_add]] <- list(cluster1 = as.character(cluster.names[i]), cluster2 = as.character(cluster.names[j]))
+      list_index_to_add <- list_index_to_add + 1
+      }
+    }
+  }
+  name_list
+}
+```
+
+Load Reference atlas in dense matrix format (non-normalized), used for marker gene determination
+```{r}
+LoadDenseReferenceAtlas <- function() {
+  load("~/analysis/Allen Atlas data/reference-atlas-matrix-Seurat-SSV4.rda")
+ ss.seurat <- ss.seurat[, ss.seurat@meta.data$neighborhood_label == "DG/SUB/CA" & ss.seurat@meta.data$class_label != "Non-Neuronal" & ss.seurat@meta.data$class_label != "GABAergic"] %>% SetIdent(value = "cluster_label")
+ clusters_with_certain_number_observations <- Idents(ss.seurat) %>%
+   table() %>%
+   .[. >= 30] %>%
+   names()
+ ss.seurat <- ss.seurat[, ss.seurat@meta.data$"cluster_label" %in% clusters_with_certain_number_observations]
+ reference_atlas <- ss.seurat
+ # add tip_label field
+ reference_atlas@meta.data$tip_label <- reference_atlas@meta.data$cluster_label
+ # add cell_label field
+ reference_atlas@meta.data$cell_label <- reference_atlas@meta.data$sample_name
+ reference_atlas
+}
+```
+
+
+Write reference atlas with bpcells to directory, and then load it (non-normalized) as a Seurat object 
+```{r}
+WriteBPCellsReferenceAtlas <- function(directory_name) {
+  load("~/analysis/Allen Atlas data/reference-atlas-matrix-Seurat-SSV4.rda")
+ ss.seurat <- ss.seurat[, ss.seurat@meta.data$neighborhood_label == "DG/SUB/CA" & ss.seurat@meta.data$class_label != "Non-Neuronal" & ss.seurat@meta.data$class_label != "GABAergic"] %>% SetIdent(value = "cluster_label")
+ clusters_with_certain_number_observations <- Idents(ss.seurat) %>%
+   table() %>%
+   .[. >= 30] %>%
+   names()
+ ss.seurat <- ss.seurat[, ss.seurat@meta.data$"cluster_label" %in% clusters_with_certain_number_observations]
+ reference_atlas <- ss.seurat
+ mat.data = reference_atlas@assays$RNA@counts 
+ write_matrix_dir(
+  mat = mat.data,
+  dir = directory_name
+)
+ return("finished :)")
+}
+```
+
+Load BPCells dir into seurat object and add tip_label in cluster_label field
+```{r}
+LoadBPCellsObjToSeurat <- function(directory_name, metadata) {
+  mat.bpcells = open_matrix_dir(dir = directory_name)
+  new_seurat_obj = CreateSeuratObject(counts = mat.bpcells, meta.data = metadata)
+  new_seurat_obj 
+}
+```
+
+Load Seurat Counts Matrix to BPCells Obj with cell_label x gene dims
+```{r}
+WriteSeuratToBPCellsDir <- function(seurat_obj,dir_name,cell_label_column = "cellid") {
+  write_matrix_dir(
+  mat = seurat_obj@assays$RNA@counts,
+  dir = dir_name
+)
+}
+```
+
+
+Load BPCells Obj to Native Class
+```{r}
+LoadBPCellsObj <- function(directory_name) {
+  open_matrix_dir(dir = directory_name)
+}
+```
+
+Find Marker Genes using a BPCells reference object. 
+Unit tests:
+1) ref_bpcells object is a bpcells object
+```{r}
+FindMarkerGenes = function(ref_bpcells, ref_metadata, tree, n_genes = 5, metadata_cluster_column = "cluster_label", metadata_cell_label_column = "cell_label",n_cells_sampled = 500) {
+  #Unit test 1: ref_bpcells is a bpcells object - else throw error
+  test_that("ref_bpcells param is a bpcells object", {
+    expect_equal(class(ref_bpcells) %>% attr("package"),"BPCells")
+  })
+  #1) Normalize reference atlas.
+  # Normalize by reads-per-cell
+  ref_bpcells <- multiply_cols(ref_bpcells, 1/Matrix::colSums(ref_bpcells))
+  # Log normalization
+  ref_bpcells <- log1p(ref_bpcells * 10000) # Log normalization
+  #save to disk to make it quick
+  ref_bpcells <- ref_bpcells %>% write_matrix_dir(tempfile(), overwrite = T)
+  marker_genes <- vector(mode = "list")
+  internal_nodes <- tree@phylo$node.label
+  direct_child_nodes <- vector(mode = "list", length = length(internal_nodes))
+  for (i in 1:length(internal_nodes)) {
+    child_node_number_ids <- child(tree, internal_nodes[i])
+    child_node_labels <- nodelab(tree, id = child_node_number_ids)
+    direct_child_nodes[[i]] <- child_node_labels
+  }
+  names(direct_child_nodes) <- internal_nodes
+  
+  child_node_labels <- direct_child_nodes %>% unlist(use.names = F)
+  descendant_tip_nodes <- vector(mode = "list", length = length(child_node_labels))
+  names(descendant_tip_nodes) <- child_node_labels
+
+  #add functionality for same-level classification only (tree structure is useless in this case)
+  if(length(internal_nodes) == 1) {
+      for (i in 1:length(child_node_labels)) {
+      descendant_tip_nodes[[i]] <- child_node_labels[i]
+    }
+      
+  } else {
+    for (i in 1:length(child_node_labels)) {
+      descendant_tip_nodes[[i]] <- offspring(tree,child_node_labels[i], type = "tips") %>% nodelab(tree,.)
+    }
+    #remove tip nodes from the above list of lists (they don't have any children nodes so their positions will have a length of 0)
+    descendant_tip_nodes <- descendant_tip_nodes[lapply(descendant_tip_nodes,length)>0]
+    specified_tip_nodes <- descendant_tip_nodes %>% unlist(use.names = F) %>% unique()
+    
+    
+  }
+  
+  for (i in 1:length(internal_nodes)) { #iterate over each parent node
+    specified_ancestor_node <- names(direct_child_nodes)[i]
+    direct_children_of_specified_ancestor_nodes_vector <- direct_child_nodes[[specified_ancestor_node]]
+    child_node_round_robin_matchups <- pairwise_combinations(direct_children_of_specified_ancestor_nodes_vector)
+    list_with_matchups <- vector(mode = "list")
+    for (j in 1:length(child_node_round_robin_matchups)) {
+      node1 <- child_node_round_robin_matchups[[j]]$cluster1
+      node2 <- child_node_round_robin_matchups[[j]]$cluster2
+      compared_nodes <- c(node1, node2)
+      if (node1 %in% names(descendant_tip_nodes)) {
+        node1_tip_nodes <- descendant_tip_nodes[[node1]]
+      } else {
+        node1_tip_nodes <- node1
+      }
+      if (node2 %in% names(descendant_tip_nodes)) {
+        node2_tip_nodes <- descendant_tip_nodes[[node2]]
+      } else {
+        node2_tip_nodes <- node2
+      }
+
+      #name the matchup of interest 
+      list_with_matchups[[j]] <- list("compared_nodes" = compared_nodes)
+      names(list_with_matchups)[j] <- paste0(node1, " vs ", node2)
+      #match colnames with class
+      cells_node_1 <- ref_metadata[ref_metadata[,metadata_cluster_column] %in% c(node1_tip_nodes),metadata_cell_label_column]
+      cells_node_2 <- ref_metadata[ref_metadata[,metadata_cluster_column] %in% c(node2_tip_nodes),metadata_cell_label_column]
+      #sample cells
+      if(length(cells_node_1) > n_cells_sampled) {
+        cells_node_1 <- cells_node_1 %>% sample(n_cells_sampled)
+      }
+      if(length(cells_node_2) > n_cells_sampled) {
+        cells_node_2 <- cells_node_2 %>% sample(n_cells_sampled)
+      }
+      
+      subset_atlas <-ref_bpcells[, c(cells_node_1, cells_node_2)] %>% transpose_storage_order()
+      celltype_labels <- c(rep(node1, length(cells_node_1)), rep(node2, length(cells_node_2))) %>% as.factor()
+      pairwise_markers <- marker_features(subset_atlas, celltype_labels, method = "wilcoxon")
+      #remove genes with less than 1 logCPM in either 
+      pairwise_markers %<>% dplyr::filter(foreground_mean > 1 |background_mean > 1) %>% dplyr::select(-background) %>% dplyr::distinct(feature, .keep_all = TRUE) %>% dplyr::mutate(log2_fc = log2(foreground_mean/background_mean))
+      
+      #get log2fc, and select the top marker genes with the highest abs value log2fc
+      pairwise_markers %<>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>% arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = 10) %>% pull(feature)
+      list_with_matchups[[j]] <- c(list_with_matchups[[j]],list(marker_genes = pairwise_markers))
+
+  }  
+  marker_genes[[i]] <-  list_with_matchups
+
+  }
+  #set naming and return list
+  names(marker_genes) <- internal_nodes
+  marker_genes
+
+}
+```
+
+Function that gives models trained to differentiate all pairwise matchups. 
+
+Input: 
+1) the list of lists with the marker genes that differentiates each parent node (and their scores). T
+contains marker genes on which tip nodes are needed to train the model on (only train it on the descendant cells of this parent node to differentiate each other)
+2) BPCells Seurat object with cell labels in the tip_label function and gene expression data for each cell.
+3) Tree structure
+
+Outputs: list of list. Each element in the list is named for a parent node. The value of that element is itself a list, where each element is a model that classifies the children of the specified parent node.
+
+
+Steps: 
+0) Create list with same overall structure in naming as marker genes
+1) Iterate through all parent nodes
+2) Iterate through all matchups
+3) Subset seurat object to only have cells pertaining to this matchup
+4) Add a field in the metadata to show the name of the child node a particular cell derives from, as pertains to this matchup
+5) Perform PCA on just the gene expression dataset with just the marker genes and use the top 10 PCs in the PC analysis 
+6) Create models trained on separating the cells currently used in the pairwise comparison. 
+7) Return list of pairwise models. 
+
+
+Unit test 1: Same Number rows in pca-transformed matrix as number of cells in each class for 1st matchup in 1st class
+```{r}
+GetModels <- function(marker_genes, ref_bpcells, ref_metadata, tree, metadata_cluster_column = "cluster_label", metadata_cell_label_column = "cell_label", n_cells_sampled = 500) {
+ #1) Normalize reference atlas.
+  # Normalize by reads-per-cell
+  ref_bpcells <- multiply_cols(ref_bpcells, 1/Matrix::colSums(ref_bpcells))
+
+  # Log normalization
+  ref_bpcells <- log1p(ref_bpcells * 10000) # Log normalization
+
+  #0) Create list with same overall structure in terms of names and matchups as marker genes. Just set value as NA for now. 
+  model_list <- marker_genes
+  for (i in 1:length(model_list)) {#iterate over parent nodes
+    for (j in 1:length(model_list[[i]])) {#iterate over pairwise matchup
+      model_list[[i]][[j]] <- NA
+    }
+  }
+  
+  #get list of tipnodes
+  tipnodes <- tip.label(tree)
+  ref_bpcells %<>% t() %>%  write_matrix_dir(tempfile(), overwrite = T)
+  for (i in 1:length(marker_genes)) {  #Iterate through parent nodes
+    for (j in 1:length(marker_genes[[i]])) { ##2) Iterate through matchups
+      #3) Subset seurat object to only have cells pertaining to this matchup
+      node1 <- marker_genes[[i]][[j]]$compared_nodes[1]
+      node2 <- marker_genes[[i]][[j]]$compared_nodes[2]
+      if(node1 %in% tipnodes) {
+      node1_tip_nodes <- node1
+      } else{
+        node1_tip_nodes <- tree %>% offspring(node1, type = "tips") %>% nodelab(tree,.)
+      }
+      if(node2 %in% tipnodes) {
+          node2_tip_nodes <- node2
+      } else {
+        node2_tip_nodes <- tree %>% offspring(node2, type = "tips") %>% nodelab(tree,.)
+      }
+      
+      #if on tip node
+      cells_node_1 <- ref_metadata[ref_metadata[,metadata_cluster_column] %in% c(node1_tip_nodes),metadata_cell_label_column]
+      cells_node_2 <- ref_metadata[ref_metadata[,metadata_cluster_column] %in% c(node2_tip_nodes),metadata_cell_label_column]
+
+      matchup_marker_genes <- marker_genes[[i]][[j]]$marker_genes
+      #subset to only have particular genes and cells. Cells are ordered on whether they're from cell 1 or cell 2.
+      subset_dataset <- ref_bpcells[c(cells_node_1, cells_node_2), matchup_marker_genes]
+      #get average expression and variance of each gene in log normalized space 
+      gene_level_stats <- matrix_stats(subset_dataset, col_stats = "variance")$col_stats
+      avg_log_exp <-  gene_level_stats["mean",]
+      #get stdev of each gene
+      stdev <- gene_level_stats["variance",] %>% sqrt()
+      #z-score dataset
+      subset_dataset <- subset_dataset %>% add_cols(-avg_log_exp) %>% multiply_cols(1/stdev)
+      #sample n_cells_sampled # of cells from each node   
+      if(length(cells_node_1) > n_cells_sampled) {
+        cells_node_1 <- cells_node_1 %>% sample(n_cells_sampled)
+      }
+      if(length(cells_node_2) > n_cells_sampled) {
+        cells_node_2 <- cells_node_2 %>% sample(n_cells_sampled)
+      }
+      subset_dataset <- subset_dataset[c(cells_node_1,cells_node_2),]
+      
+      
+      #write to memory to make it easier to load datasets
+      subset_dataset <- subset_dataset %>% write_matrix_dir(tempfile(), overwrite = T)
+      #perform pca
+      marker_ge_pca <- prcomp(subset_dataset, center = F, rank = 3)
+      
+      #Unit test 1: 
+      if (i ==1 & j ==1) {
+        test_that("Same Number rows in pca-transformed matrix as number of cells in each class for 1st matchup in 1st class", {
+    expect_equal(marker_ge_pca$x %>% nrow(), length(cells_node_1) + length(cells_node_2))
+  })
+      }
+        
+      
+      #save pca loadings (contribution of each variable to each pc) to variable, to use for later prediction
+      #get labels for each cell in the training dataset in order of how it appears 
+      #reorder to get all node1 cells then node2 cells
+      celltype_labels <- c(rep(node1, length(cells_node_1)), rep(node2, length(cells_node_2))) %>% as.factor()
+      classification_models <- CreateAllModels(marker_ge_pca$x, celltype_labels)
+      
+      model_list[[i]][[j]] <- model_list[[i]][[j]] %>% as.list()
+      model_list[[i]][[j]][["Models"]] <- classification_models
+      model_list[[i]][[j]][["avg_log_exp"]] <- avg_log_exp
+      model_list[[i]][[j]][["stdev"]] <- stdev
+      model_list[[i]][[j]][["pc_loadings"]] <- marker_ge_pca$rotation %>% t()
+      model_list[[i]][[j]][["tip_labels"]] <- marker_genes[[i]][[j]][["tip_labels"]]
+      model_list[[i]][[j]][["compared_nodes"]] <- marker_genes[[i]][[j]][["compared_nodes"]]
+
+      #remove model list element without name in model list, just an artifact of how I created the list in the beginning of the function. 
+      model_list[[i]][[j]] <- model_list[[i]][[j]][model_list[[i]][[j]] %>% names() != ""]
+    }
+  }
+ #7) Return list of pairwise models. 
+  model_list
+
+}
+
+```
+
+CreateBroadTree
+```{r}
+CreateBroadTree <- function(ref_metadata, metadata_field = "cluster_label") {
+  clusters_with_certain_number_observations <- ref_metadata[,metadata_field] %>% unique()
+  Hippocampus_Broad <- "((361_DG, 362_DG, 363_DG, 364_DG)DG, (318_SUB, 319_SUB, 320_SUB, 321_SUB, 322_ProS, 323_ProS, 324_ProS, 326_ProS, 327_ProS, 328_ProS, 329_CA1-ProS, 330_CA1-ProS, 331_CA1-ProS, 332_CA1-ProS, 333_CA1-ProS, 334_CA1-ve, 335_CA1-ve, 336_CA1-ve, 337_CA1, 338_CA1,339_CA1,340_CA1,341_CA1,342_CA1,343_CA1,344_CA1,345_CA1,346_CA1-do,347_CA1-do,348_CA1-do)CA1-ProS, (350_Mossy, 351_CA3-ve, 352_CA3-ve, 353_CA3-ve, 354_CA3-ve, 355_CA3-ve, 356_CA3-do, 357_CA3-do, 358_CA3-do)CA3)Hippocampus_Broad;"
+  
+  tree_broad <- read.newick(textConnection(Hippocampus_Broad), node.label = "label")
+  tree_broad <- drop.tip(tree_broad, "NA")
+  
+  
+  #remove tip nodes of clusters with less than 30 obs in the reference atlas
+  tip_nodes_broad <- tree_broad %>% offspring("Hippocampus_Broad",type = "tips") %>% nodelab(tree_broad,.)
+  tip_nodes_to_remove_broad <- tip_nodes_broad[! tip_nodes_broad %in% clusters_with_certain_number_observations]
+  tree_broad <- tree_broad %>% drop.tip(tip_nodes_to_remove_broad) 
+  tree_broad %>% as.treedata() 
+  
+  #visualize tree
+  #ggtree(tree_broad, hang = 1) +geom_nodelab(geom = "label", node = "all") 
+  
+}
+
+
+```
+
+```{r}
+GetBPCellsSampleDataset <- function() {
+  jax_dataset <- data.table::fread(file = "~/Desktop/Patch-Seq/Batch 1-2 results/mm39-5xFAD alignment/salmon.merged.gene_counts.tsv") %>% .[,2:ncol(.)] %>% as.data.frame()
+  #remove duplicate genes 
+  removed_gene_names <- jax_dataset$gene_name[duplicated(jax_dataset$gene_name)]
+  jax_dataset <- jax_dataset[!duplicated(jax_dataset$gene_name), ]
+  rownames(jax_dataset) <- jax_dataset$gene_name
+  jax_dataset <- jax_dataset %>% .[,2:ncol(.)]
+  #write bpcells
+  jax_dataset <- jax_dataset %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix") %>% write_matrix_dir("pseq_sample", overwrite = T)
+  open_matrix_dir("pseq_sample")
+}
+```
+
+```{r}
+LoadBPCellsFromTable <- function(filename, dir_name = "new_dataset") {
+  dataset <- data.table::fread(filename) %>% .[,2:ncol(.)] %>% as.data.frame()
+  removed_gene_names <- dataset$gene_name[duplicated(dataset$gene_name)]
+  dataset <- dataset[!duplicated(dataset$gene_name), ]
+  rownames(dataset) <- dataset$gene_name
+  dataset <- dataset %>% .[,2:ncol(.)]
+  #write bpcells
+  dataset <- dataset %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix") %>% write_matrix_dir(paste0(dir_name), overwrite = T)
+  open_matrix_dir(dir_name)
+}
+```
+
+
+```{r}
+#only keeps genes found in both datasets 
+AlignBPCellsObjs <- function(bpcells_obj1, bpcells_obj2) {
+  #only keep genes with at least 1 cell expressed and found in both datasets
+  genes_expressed_obj1 <- rowSums(bpcells_obj1) %>% .[.!=0] %>% names() 
+  genes_expressed_obj2 <- rowSums(bpcells_obj2) %>% .[.!=0] %>% names()
+  keep_genes = intersect(genes_expressed_obj1, genes_expressed_obj2)
+  bpcells_obj1 = bpcells_obj1[keep_genes,]
+  bpcells_obj1
+}
+```
+
+```{r}
+predict_models <- function(model, model_name, nonsparse_mat) {
+  if (model_name %in% c("ridge", "lasso", "elastic_net")) {
+    predict(model, nonsparse_mat, s = "lambda.1se", type = "class") %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>%  return()
+  } else if (model_name %in% c("lda", "qda")){ 
+    predict(model,nonsparse_mat %>% as.data.frame())$class %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  } else if (model_name %in% c("knn")){ 
+    model %>% predict(nonsparse_mat %>% as.data.frame(), type = "class") %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  }  else if (model_name %in% c("rf")){ 
+    model %>% predict(nonsparse_mat, type = "response") %>% .$predictions %>%  as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  } else {
+    predict(model, nonsparse_mat) %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  }
+}
+```
+
+
+Unit test 1: all remaining cells assigned to internal nodes
+Unit test 2: expected number of elements returned
+```{r}
+Classify <- function(bpcells_query, models, tree_struc) {
+  # initial rootnode level - do all at once. All tree_struc have rootnodes, even if all clusters are at one level
+  rootnode <- tree_struc %>%
+    rootnode() %>%
+    nodelab(tree_struc, .)
+  tipnodes <- nodelab(tree_struc, offspring(tree_struc, rootnode, type = "tips"))
+  # Normalize by reads-per-cell
+  bpcells_query <- multiply_cols(bpcells_query, 1 / Matrix::colSums(bpcells_query))
+  # Log normalization
+  bpcells_query <- log1p(bpcells_query * 10000) # Log normalization
+  # save to disk to make it quick
+  query_cells <- bpcells_query %>% write_matrix_dir(tempfile(), overwrite = T)
+
+  # get internal nodes in hierarchical order
+  internal_nodes <- c(rootnode, offspring(tree_struc, rootnode) %>% nodelab(tree_struc, .) %>% .[-which(. %in% nodelab(tree_struc, offspring(tree_struc, rootnode, type = "tips")))])
+  internal_node_assignment <- vector(mode = "list", length = length(internal_nodes)) %>% set_names(internal_nodes)
+  internal_node_assignment[[rootnode]] <- colnames(query_cells)
+  final_classifications <- vector(mode = "character")
+  for (j in 1:length(internal_nodes)) { # iterate node
+    ## track cells that don't go past internal nodes
+    node <- internal_nodes[j]
+    res_list <- vector(mode = "list", length = length(models[[node]]))
+    cells <- internal_node_assignment[[node]]
+    ## final classification for cells that don't go past internal node = internal node
+    for (i in 1:length(models[[node]])) { # iterate over models, classify
+      first_lev_avg_counts <- models[[node]][[i]]$avg_log_exp # scale
+      first_lev_std_counts <- models[[node]][[i]]$stdev
+      first_lev_markers <- models[[node]][[i]]$pc_loadings %>% colnames()
+      first_lev_bpcells <- query_cells[first_lev_markers, cells] %>% t() # select markers and cells of this internal node level
+      first_lev_bpcells <- first_lev_bpcells %>%
+        add_cols(-first_lev_avg_counts) %>%
+        multiply_cols(1 / first_lev_std_counts)
+      first_lev_pc_loadings <- models[[node]][[i]]$pc_loadings[, first_lev_markers] %>% t()
+      # transform data using matrix multiplication operator %*%
+      first_lev_bpcells <- first_lev_bpcells %*% first_lev_pc_loadings
+      nonsparse_mat <- first_lev_bpcells %>% as.matrix()
+      # use models
+      first_lev_models <- models[[node]][[i]]$Models
+      res_list[[i]] <- purrr::map2(first_lev_models, first_lev_models %>% names(), predict_models, nonsparse_mat) %>%
+        as.data.frame() %>%
+        set_colnames(paste0(colnames(.), "_", i)) %>%
+        t()
+    }
+    #count_threshold <- (str_count(names(models[[node]]), pattern = names(models[[node]])[1] %>% word()) %>% sum()) * 10 * .66 #2/3 of max score (num unique matchups for a class - 1)*10
+    
+    count_threshold <- (child(tree_struc,node) %>% length() - 1) * 10 * .66 #2/3 of max score (num matchups for each class - 1)*10
+
+    obs_above_threshold <- res_list %>%
+      plyr::rbind.fill.matrix(res_list) %>%
+      as.data.frame() %>%
+      tidyr::pivot_longer(everything(), names_to = "obs", values_to = "class") %>%
+      dplyr::group_by(obs) %>%
+      dplyr::count(class, name = "count") %>%
+      dplyr::group_by(obs) %>%
+      dplyr::filter(count == max(count)) 
+    #filter obs with mult max classes
+    tied_obs <- obs_above_threshold %>% group_by(obs) %>% summarise(n = n()) %>% filter(n > 1) %>% pull(obs)
+    obs_above_threshold <- obs_above_threshold %>% 
+      dplyr::filter(!obs %in% tied_obs) %>% 
+      dplyr::filter(count >= count_threshold) %>%
+      pull(class, name = obs)
+    ## assign "tip" cells to final classification
+    tip_cells <- obs_above_threshold[obs_above_threshold %in% tipnodes]
+    final_classifications <- final_classifications %>% append(tip_cells)
+    ## assign "stuck" cells to final classification - ties/not threshold
+    stuck_cells <- rownames(first_lev_bpcells)[!rownames(first_lev_bpcells) %in% names(final_classifications) & !rownames(first_lev_bpcells) %in% names(obs_above_threshold)] %>% set_names(., .)
+    stuck_cells <- rep(node, length(stuck_cells))
+    names(stuck_cells) <- rownames(first_lev_bpcells)[!rownames(first_lev_bpcells) %in% names(final_classifications) & !rownames(first_lev_bpcells) %in% names(obs_above_threshold)]
+    final_classifications <- final_classifications %>% append(stuck_cells)
+    ## update internal node assignment list
+    if (obs_above_threshold[!obs_above_threshold %in% tipnodes & !obs_above_threshold %in% names(final_classifications)] %>% length() > 0) {
+      obs_above_threshold <- obs_above_threshold[obs_above_threshold %in% internal_nodes]
+      obs_above_threshold <- split(obs_above_threshold, obs_above_threshold)
+      # unit test 1: all remaining cells assigned to internal nodes
+      test_that("all remaining cells assigned to internal nodes", {
+        expect_contains(internal_nodes, names(obs_above_threshold))
+      })
+      for (name in names(obs_above_threshold)) {
+        internal_node_assignment[[name]] <- obs_above_threshold[[name]] %>% names()
+      }
+    }
+  }
+  test_that("expected number of elements returned", {
+    expect_equal(length(final_classifications), ncol(bpcells_query))
+    })
+  final_classifications
+}
+```
