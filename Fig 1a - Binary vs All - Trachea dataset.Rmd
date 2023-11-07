@@ -1,0 +1,67 @@
+---
+title: "Fig 1a - Binary vs All - Trachea dataset"
+author: "Jonathan Algoo"
+date: "2023-11-06"
+output: html_document
+---
+
+Fig 1a - Using marker genes that differentiate two cell classes > marker genes that differentiate all cell classes, just try training normal ML classifiers using consensus approach on 1-vs-1 vs marker genes identified for 1-vs-all
+
+Load trachea seurat obj from Tabula Muris dataset
+```{r}
+library(readr)
+library(rsample)
+annotations <- read.csv("../scmappr_paper_datasets/annotations_facs.csv") %>% dplyr::filter(tissue == "Marrow")
+marrow_ge <- read.csv("../scmappr_paper_datasets/FACS/Marrow-counts.csv")
+rownames(marrow_ge) <- marrow_ge$X
+marrow_ge %<>% select(-X)
+marrow_cell_ids <- marrow_ge %>% colnames()
+annotations <- annotations[match(marrow_ge %>% colnames(),annotations$cell),]
+celltype_anno <- annotations$cluster.ids
+#remove cells with na anno
+na_cells <- which(is.na(celltype_anno))
+celltype_anno <- celltype_anno[-na_cells]
+annotations <- annotations[-na_cells,]
+#subset marrow_ge to only include non-na anno
+marrow_ge <- marrow_ge[,-na_cells]
+#write bpcells for future
+marrow_ge_bpcells <- marrow_ge %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix") %>% write_matrix_dir(paste0("../scmappr_paper_datasets/bpcells/marrow_tm"), overwrite = T)
+```
+Convenience function for reading FACS-formatted TM files to bpcells in one command? 
+
+```{r}
+#split 80/20 train/test
+#get testing and training set in df form
+marrow_ge <- t(marrow_ge) %>% as.data.frame()
+marrow_ge$cluster.ids <- annotations$cluster.ids
+splits <- initial_split(marrow_ge, prop = .80, strata = cluster.ids, pool = 0)
+test.set <- splits %>% testing() 
+test.set.labels <- test.set$cluster.ids
+train.set.labels <- train.set$cluster.ids
+test.set <- test.set %>% select(-cluster.ids)
+train.set <- train.set %>% select(-cluster.ids)
+```
+
+
+```{r}
+tree <- CreateEqualTree(annotations$cluster.ids)
+#only sampled 100 cells per class bc small # cells in many cell classes
+pairwise_markers <- FindMarkerGenes(ref_bpcells = marrow_ge, tree = tree, ref_metadata = annotations,metadata_cluster_column = "cluster.ids",n_cells_sampled = 100,metadata_cell_label_column = "cell")
+
+
+all_class_markers <- marker_features(mat = marrow_ge, groups = annotations$cluster.ids, method = "wilcoxon")
+
+#do same processing on all_class_markers as done in pairwise markers in FindMarkerGenes function
+all_class_markers %<>% dplyr::filter(foreground_mean > 1 |background_mean > 1) %>% dplyr::select(-background) %>% dplyr::distinct(feature, .keep_all = TRUE) %>% dplyr::mutate(log2_fc = log2(foreground_mean/background_mean))
+#get log2fc, and select the top marker genes with the highest abs value log2fc
+#have slightly more than 10* number of marker genes bc some genes literally were not expressed in other cell types, so they had log2fc of infinity. Kept all these genes for the present comparison, to make all marker gene group as robust as possible. 
+all_class_markers %<>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>% arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = 10, by = foreground) %>% pull(feature)
+      
+all_class_ge <- marrow_ge[all_class_markers,] %>% as.matrix()
+
+
+
+      
+```
+
+Repeat with 100, 1000 marker genes per broadclass for the all_class_markers later? 
