@@ -30,10 +30,15 @@ create_all_models is a function that takes in a ge reference dataset that has be
 Input: 1) PC-transformed reference dataset 2)Factor vector of cell-type labels
 Output: A list, where each element in the list is a model that classifies cells to one of the celltype labels given as input. 
 ```{r}
-CreateAllModels <- function(reference_dataset, celltype_labels) {
+CreateAllModels <- function(reference_dataset, celltype_labels, models_to_include = NULL) {
   output_model_list <- vector(mode = "list", length = 10)
   names(output_model_list) <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf", "qda")
   function_list <- c(pairwise_linear_svm,pairwise_polynomial_svm,pairwise_naive_bayes,pairwise_ridge,pairwise_lasso,pairwise_elastic_net,pairwise_lda,pairwise_knn,pairwise_random_forest,pairwise_qda)
+  if(!is.null(output_model_list)) {
+    model_indices_to_keep <- which(names(output_model_list) %in% models_to_include)
+    output_model_list <- output_model_list[model_indices_to_keep]
+    function_list <- function_list[model_indices_to_keep]
+  }
   for (i in 1:length(function_list)) {
     model <- function_list[[i]](reference_dataset, celltype_labels)
     output_model_list[[i]] <- model
@@ -365,7 +370,7 @@ Steps:
 
 Unit test 1: Same Number rows in pca-transformed matrix as number of cells in each class for 1st matchup in 1st class
 ```{r}
-GetModels <- function(marker_genes, ref_bpcells, ref_metadata, tree, metadata_cluster_column = "cluster_label", metadata_cell_label_column = "cell_label", n_cells_sampled = 500) {
+GetModels <- function(marker_genes, ref_bpcells, ref_metadata, tree, metadata_cluster_column = "cluster_label", metadata_cell_label_column = "cell_label", n_cells_sampled = 500, models_to_include = NULL) {
  #1) Normalize reference atlas.
   # Normalize by reads-per-cell
   ref_bpcells <- multiply_cols(ref_bpcells, 1/Matrix::colSums(ref_bpcells))
@@ -441,7 +446,7 @@ GetModels <- function(marker_genes, ref_bpcells, ref_metadata, tree, metadata_cl
       #get labels for each cell in the training dataset in order of how it appears 
       #reorder to get all node1 cells then node2 cells
       celltype_labels <- c(rep(node1, length(cells_node_1)), rep(node2, length(cells_node_2))) %>% as.factor()
-      classification_models <- CreateAllModels(marker_ge_pca$x, celltype_labels)
+      classification_models <- CreateAllModels(marker_ge_pca$x, celltype_labels, models_to_include)
       
       model_list[[i]][[j]] <- model_list[[i]][[j]] %>% as.list()
       model_list[[i]][[j]][["Models"]] <- classification_models
@@ -539,6 +544,14 @@ predict_models <- function(model, model_name, nonsparse_mat) {
   } else {
     predict(model, nonsparse_mat) %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
   }
+}
+```
+
+
+```{r}
+CreateEqualTree <- function(cell_labels, rootnode_name = "Broadclass") {
+  tree_newick_format <- paste0("(",str_c(unique(na.omit(cell_labels)), collapse = ","),")",rootnode_name,";") %>% .[!is.na(.)]
+  read.newick(textConnection(tree_newick_format), node.label = "label") %>% as.treedata()
 }
 ```
 
