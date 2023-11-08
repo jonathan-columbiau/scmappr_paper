@@ -25,7 +25,6 @@ annotations <- annotations[-na_cells,]
 #subset marrow_ge to only include non-na anno
 marrow_ge <- marrow_ge[,-na_cells]
 #write bpcells for future
-marrow_ge_bpcells <- marrow_ge %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix") %>% write_matrix_dir(paste0("../scmappr_paper_datasets/bpcells/marrow_tm"), overwrite = T)
 ```
 Convenience function for reading FACS-formatted TM files to bpcells in one command? 
 
@@ -36,32 +35,72 @@ marrow_ge <- t(marrow_ge) %>% as.data.frame()
 marrow_ge$cluster.ids <- annotations$cluster.ids
 splits <- initial_split(marrow_ge, prop = .80, strata = cluster.ids, pool = 0)
 test.set <- splits %>% testing() 
-test.set.labels <- test.set$cluster.ids
-train.set.labels <- train.set$cluster.ids
+train.set <- splits %>% training()
 test.set <- test.set %>% select(-cluster.ids)
 train.set <- train.set %>% select(-cluster.ids)
+annotations.train.set <- annotations[match(rownames(train.set),annotations$cell),]
+annotations.test.set <- annotations[match(rownames(test.set),annotations$cell),]
+
+```
+
+```{r}
+train.set.bp <- train.set %>% t() %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix")
+test.set.bp <- test.set %>% t() %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix")
+
 ```
 
 
 ```{r}
-tree <- CreateEqualTree(annotations$cluster.ids)
+tree <- CreateEqualTree(annotations.train.set$cluster.ids)
 #only sampled 100 cells per class bc small # cells in many cell classes
-pairwise_markers <- FindMarkerGenes(ref_bpcells = marrow_ge, tree = tree, ref_metadata = annotations,metadata_cluster_column = "cluster.ids",n_cells_sampled = 100,metadata_cell_label_column = "cell")
 
+pairwise_markers <- FindMarkerGenes(ref_bpcells = train.set.bp, tree = tree, ref_metadata = annotations.train.set,metadata_cluster_column = "cluster.ids",n_cells_sampled = 100,metadata_cell_label_column = "cell")
 
-all_class_markers <- marker_features(mat = marrow_ge, groups = annotations$cluster.ids, method = "wilcoxon")
+all_class_markers <- marker_features(mat = train.set.bp, groups = annotations.train.set$cluster.ids, method = "wilcoxon")
 
 #do same processing on all_class_markers as done in pairwise markers in FindMarkerGenes function
 all_class_markers %<>% dplyr::filter(foreground_mean > 1 |background_mean > 1) %>% dplyr::select(-background) %>% dplyr::distinct(feature, .keep_all = TRUE) %>% dplyr::mutate(log2_fc = log2(foreground_mean/background_mean))
 #get log2fc, and select the top marker genes with the highest abs value log2fc
 #have slightly more than 10* number of marker genes bc some genes literally were not expressed in other cell types, so they had log2fc of infinity. Kept all these genes for the present comparison, to make all marker gene group as robust as possible. 
 all_class_markers %<>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>% arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = 10, by = foreground) %>% pull(feature)
-      
-all_class_ge <- marrow_ge[all_class_markers,] %>% as.matrix()
+all_class_train_ge <- train.set.bp[all_class_markers,] %>% as.matrix()
 
 
 
       
 ```
+Pairwise analysis 
+```{r}
+#use getmodels function to create models, then subset to only include rf for this analysis
+pairwise_models <- GetModels(pairwise_markers, train.set.bp, annotations.train.set, tree, "cluster.ids", "cell", n_cells_sampled = 100, models_to_include = "rf")
+#classify test set just using rf model
+#for each cell, choose the class with highest # wins (set prop_max_threshold to 0 to only choose the winningmost irrespective of other class scores for each cell)
+pairwise_classifications <- Classify(test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = 0)
+#watch out - this function doesn't return classifications in cell order of test.set.bp
+#order to match annotations.test.set$cell
+pairwise_classifications <- pairwise_classifications[match(annotations.test.set$cell,names(pairwise_classifications))]
+#get proportion accurate
+ground_truth_cluster_ids <- annotations.test.set$cluster.ids 
+names(ground_truth_cluster_ids) <- annotations.test.set$cell
+proportion_tied <- sum(pairwise_classifications == "Broadclass") / length(pairwise_classifications)
+tied_obs <- which(pairwise_classifications == "Broadclass")
+no_tie_cluster_ids <- ground_truth_cluster_ids[-tied_obs]
+no_tie_predicted_ids <- pairwise_classifications[-tied_obs]
+proportion_accurate_no_tie <- which(no_tie_predicted_ids == no_tie_cluster_ids) %>% length() / length(no_tie_cluster_ids)
+proportion_accurate_no_tie
+```
+
+One vs All Analysis 
+```{r}
+#create rf
+pairwise_random_forest <- function(reference_dataset, celltype_labels) {
+  #upsample minority class to make class frequencies equal
+  reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
+    pairwise_model <- ranger(celltype_labels ~ ., data = reference_dataset, num.trees = 500, classification = T, replace = T)
+    pairwise_model
+}
+
+```
+
 
 Repeat with 100, 1000 marker genes per broadclass for the all_class_markers later? 

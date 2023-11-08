@@ -559,7 +559,7 @@ CreateEqualTree <- function(cell_labels, rootnode_name = "Broadclass") {
 Unit test 1: all remaining cells assigned to internal nodes
 Unit test 2: expected number of elements returned
 ```{r}
-Classify <- function(bpcells_query, models, tree_struc) {
+Classify <- function(bpcells_query, models, tree_struc, prop_max_threshold = .66) {
   # initial rootnode level - do all at once. All tree_struc have rootnodes, even if all clusters are at one level
   rootnode <- tree_struc %>%
     rootnode() %>%
@@ -604,7 +604,7 @@ Classify <- function(bpcells_query, models, tree_struc) {
     }
     #count_threshold <- (str_count(names(models[[node]]), pattern = names(models[[node]])[1] %>% word()) %>% sum()) * 10 * .66 #2/3 of max score (num unique matchups for a class - 1)*10
     
-    count_threshold <- (child(tree_struc,node) %>% length() - 1) * 10 * .66 #2/3 of max score (num matchups for each class - 1)*10
+    count_threshold <- (child(tree_struc,node) %>% length() - 1) * 10 * prop_max_threshold #2/3 of max score (num matchups for each class - 1)*10
 
     obs_above_threshold <- res_list %>%
       plyr::rbind.fill.matrix(res_list) %>%
@@ -644,6 +644,7 @@ Classify <- function(bpcells_query, models, tree_struc) {
   test_that("expected number of elements returned", {
     expect_equal(length(final_classifications), ncol(bpcells_query))
     })
-  final_classifications
+  #order match bpcells_query
+  final_classifications[match(colnames(bpcells_query),names(final_classifications))]
 }
 ```
