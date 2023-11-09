@@ -24,7 +24,7 @@ celltype_anno <- celltype_anno[-na_cells]
 annotations <- annotations[-na_cells,]
 #subset marrow_ge to only include non-na anno
 marrow_ge <- marrow_ge[,-na_cells]
-#write bpcells for future
+#write bpcells for future use?
 ```
 Convenience function for reading FACS-formatted TM files to bpcells in one command? 
 
@@ -56,30 +56,14 @@ tree <- CreateEqualTree(annotations.train.set$cluster.ids)
 
 pairwise_markers <- FindMarkerGenes(ref_bpcells = train.set.bp, tree = tree, ref_metadata = annotations.train.set,metadata_cluster_column = "cluster.ids",n_cells_sampled = 100,metadata_cell_label_column = "cell")
 
-all_class_markers <- marker_features(mat = train.set.bp, groups = annotations.train.set$cluster.ids, method = "wilcoxon")
-
-#do same processing on all_class_markers as done in pairwise markers in FindMarkerGenes function
-all_class_markers %<>% dplyr::filter(foreground_mean > 1 |background_mean > 1) %>% dplyr::select(-background) %>% dplyr::distinct(feature, .keep_all = TRUE) %>% dplyr::mutate(log2_fc = log2(foreground_mean/background_mean))
-#get log2fc, and select the top marker genes with the highest abs value log2fc
-#have slightly more than 10* number of marker genes bc some genes literally were not expressed in other cell types, so they had log2fc of infinity. Kept all these genes for the present comparison, to make all marker gene group as robust as possible. 
-all_class_markers %<>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>% arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = 10, by = foreground) %>% pull(feature)
-all_class_train_ge <- train.set.bp[all_class_markers,] %>% as.matrix()
-
-
-
-      
 ```
 Pairwise analysis 
 ```{r}
 #use getmodels function to create models, then subset to only include rf for this analysis
-pairwise_models <- GetModels(pairwise_markers, train.set.bp, annotations.train.set, tree, "cluster.ids", "cell", n_cells_sampled = 100, models_to_include = "rf")
+pairwise_models <- GetModels(pairwise_markers, train.set.bp, annotations.train.set, tree, "cluster.ids", "cell", n_cells_sampled = 100, models_to_include = "elastic_net")
 #classify test set just using rf model
 #for each cell, choose the class with highest # wins (set prop_max_threshold to 0 to only choose the winningmost irrespective of other class scores for each cell)
 pairwise_classifications <- Classify(test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = 0)
-#watch out - this function doesn't return classifications in cell order of test.set.bp
-#order to match annotations.test.set$cell
-pairwise_classifications <- pairwise_classifications[match(annotations.test.set$cell,names(pairwise_classifications))]
-#get proportion accurate
 ground_truth_cluster_ids <- annotations.test.set$cluster.ids 
 names(ground_truth_cluster_ids) <- annotations.test.set$cell
 proportion_tied <- sum(pairwise_classifications == "Broadclass") / length(pairwise_classifications)
@@ -90,17 +74,64 @@ proportion_accurate_no_tie <- which(no_tie_predicted_ids == no_tie_cluster_ids) 
 proportion_accurate_no_tie
 ```
 
+
+
 One vs All Analysis 
 ```{r}
-#create rf
-pairwise_random_forest <- function(reference_dataset, celltype_labels) {
-  #upsample minority class to make class frequencies equal
-  reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
-    pairwise_model <- ranger(celltype_labels ~ ., data = reference_dataset, num.trees = 500, classification = T, replace = T)
-    pairwise_model
-}
+#as done for pairwise marker gene determination, for all class marker gene determination,
+#1) Normalize reference atlas by reads-per-cell
+all_markers_ds <- multiply_cols(train.set.bp, 1/Matrix::colSums(train.set.bp))
+#2) Log normalization
+all_markers_ds <- log1p(all_markers_ds * 10000) # Log normalization
 
+all_class_markers <- marker_features(mat = all_markers_ds, groups = annotations.train.set$cluster.ids, method = "wilcoxon")
+#do same processing on all_class_markers as done in pairwise markers in FindMarkerGenes function
+all_class_markers %<>% dplyr::filter(foreground_mean > 1 |background_mean > 1) %>% dplyr::select(-background) %>% dplyr::distinct(feature, .keep_all = TRUE) %>% dplyr::mutate(log2_fc = log2(foreground_mean/background_mean))
+#get log2fc, and select the top marker genes with the highest abs value log2fc
+all_class_markers %<>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>% arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = 10, by = foreground) %>% pull(feature)
+# Create models
+#normalize by reads_per_cell
+train.set.all <- train.set.bp %>% t()
+
+train.set.all <- multiply_cols(train.set.all, 1/Matrix::colSums(train.set.all))
+# Log normalization
+train.set.all <- log1p(train.set.all * 10000) 
+#z-score
+train.set.all <- train.set.all[,all_class_markers]
+#get average expression and variance of each gene in log normalized space 
+gene_level_stats <- matrix_stats(train.set.all, col_stats = "variance")$col_stats
+avg_log_exp <-  gene_level_stats["mean",]
+#get stdev of each gene
+stdev <- gene_level_stats["variance",] %>% sqrt()
+#z-score dataset
+train.set.all <- train.set.all %>% add_cols(-avg_log_exp) %>% multiply_cols(1/stdev)
+#pca w/top 20 PCs, unlike 3 in pairwise
+marker_ge_pca <- prcomp(train.set.all, center = F, rank = 20)
+
+#create rf on upsampled dataset
+#make all classes have same probability, to better balance/better similarity to pairwise method
+train.set.upsampled <- marker_ge_pca$x %>% as.matrix()
+train.set.upsampled <- upSample(x = train.set.upsampled, y = annotations.train.set$cluster.ids %>% as.factor(), yname = "celltype_labels", list = T)
+celltype_labels <- train.set.upsampled[["y"]]
+reference_dataset <- train.set.upsampled[["x"]] %>% as.matrix()
+one_v_all_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "multinomial", alpha = .5) #can try grouped and not grouped
+#perform same transformations on test set, and z-score using train set m + sd
+test.set.all <- test.set.bp %>% t()
+
+test.set.all <- multiply_cols(test.set.all, 1/Matrix::colSums(test.set.all))
+# Log normalization
+test.set.all <- log1p(test.set.all * 10000) 
+#z-score using train set mean + stdev for everything
+test.set.all <- test.set.all[,all_class_markers]
+test.set.all <- test.set.all %>%
+        add_cols(-avg_log_exp) %>%
+        multiply_cols(1 / stdev)
+pc_loadings <- marker_ge_pca$rotation
+# transform data using matrix multiplication operator %*%
+test.set.all <- test.set.all %*% pc_loadings
+test.set.all <- test.set.all %>% as.matrix()
+predicted.classifications.all <- predict(one_v_all_model, test.set.all, s = "lambda.1se", type = "class") %>% as.character() %>% set_names(rownames(nonsparse_mat)) 
+proportion_accurate_multi <- which(predicted.classifications.all == ground_truth_cluster_ids) %>% length() / length(ground_truth_cluster_ids)
+proportion_accurate_multi
 ```
-
-
-Repeat with 100, 1000 marker genes per broadclass for the all_class_markers later? 
+Looked like for cv.glmnet it worked fine with or without the thing (.92 vs .9, no difference)
