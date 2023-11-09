@@ -33,7 +33,7 @@ Output: A list, where each element in the list is a model that classifies cells 
 CreateAllModels <- function(reference_dataset, celltype_labels, models_to_include = NULL) {
   output_model_list <- vector(mode = "list", length = 10)
   names(output_model_list) <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf", "qda")
-  function_list <- c(pairwise_linear_svm,pairwise_polynomial_svm,pairwise_naive_bayes,pairwise_ridge,pairwise_lasso,pairwise_elastic_net,pairwise_lda,pairwise_knn,pairwise_random_forest,pairwise_qda)
+  function_list <- c(linear_svm,polynomial_svm,naive_bayes,binomial_ridge,binomial_lasso,binomial_elastic_net,lda,knn,random_forest,qda)
   if(!is.null(output_model_list)) {
     model_indices_to_keep <- which(names(output_model_list) %in% models_to_include)
     output_model_list <- output_model_list[model_indices_to_keep]
@@ -50,7 +50,7 @@ CreateAllModels <- function(reference_dataset, celltype_labels, models_to_includ
 
 LDA Algorithm
 ```{r}
-pairwise_lda <- function(reference_dataset, celltype_labels) {
+lda <- function(reference_dataset, celltype_labels) {
     #upsample minority class to make class frequencies equal
     reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
     pairwise_model <- MASS::lda(celltype_labels ~ ., data = reference_dataset)
@@ -62,7 +62,7 @@ pairwise_lda <- function(reference_dataset, celltype_labels) {
 QDA Algorithm
 ```{r}
 #from MASS package
-pairwise_qda <- function(reference_dataset, celltype_labels) {
+qda <- function(reference_dataset, celltype_labels) {
     #upsample minority class to make class frequencies equal
     reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
     pairwise_model <- qda(celltype_labels ~ ., data = reference_dataset)
@@ -72,7 +72,7 @@ pairwise_qda <- function(reference_dataset, celltype_labels) {
 
 Naive Bayes  Algorithm
 ```{r}
-pairwise_naive_bayes <- function(reference_dataset, celltype_labels) {
+naive_bayes <- function(reference_dataset, celltype_labels) {
     #upsample minority class to make class frequencies equal
     reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
     pairwise_model <- naiveBayes(celltype_labels ~ ., data = reference_dataset)
@@ -83,7 +83,7 @@ pairwise_naive_bayes <- function(reference_dataset, celltype_labels) {
 Linear SVM  algorithm
 ```{r}
 #e1071 package
-pairwise_linear_svm <- function(reference_dataset, celltype_labels) {
+linear_svm <- function(reference_dataset, celltype_labels) {
     reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels")
     pairwise_model <- svm(celltype_labels ~ ., data = reference_dataset, kernel = "linear", scale = F)
     pairwise_model
@@ -93,7 +93,7 @@ pairwise_linear_svm <- function(reference_dataset, celltype_labels) {
 Polynomial SVM  algorithm
 ```{r}
 #e1071 package
-pairwise_polynomial_svm <- function(reference_dataset, celltype_labels) {
+polynomial_svm <- function(reference_dataset, celltype_labels) {
     reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels")
     pairwise_model <- svm(celltype_labels ~ ., data = reference_dataset, kernel = "polynomial", scale = F)
     pairwise_model
@@ -104,7 +104,7 @@ pairwise_polynomial_svm <- function(reference_dataset, celltype_labels) {
 Elastic Net Algorithm
 ```{r}
 #glmnet package
-pairwise_elastic_net <- function(reference_dataset, celltype_labels) {
+binomial_elastic_net <- function(reference_dataset, celltype_labels) {
     upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
     celltype_labels <- upsampled_dataset[["y"]]
     reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
@@ -116,7 +116,7 @@ pairwise_elastic_net <- function(reference_dataset, celltype_labels) {
 Lasso Regression Algorithm
 ```{r}
 #glmnet package
-pairwise_lasso <- function(reference_dataset, celltype_labels) {
+binomial_lasso <- function(reference_dataset, celltype_labels) {
     upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
     celltype_labels <- upsampled_dataset[["y"]]
     reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
@@ -129,7 +129,7 @@ pairwise_lasso <- function(reference_dataset, celltype_labels) {
 Ridge Regression algorithm
 ```{r}
 #glmnet package
-pairwise_ridge <- function(reference_dataset, celltype_labels) {
+binomial_ridge <- function(reference_dataset, celltype_labels) {
     upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
     celltype_labels <- upsampled_dataset[["y"]]
     reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
@@ -140,7 +140,7 @@ pairwise_ridge <- function(reference_dataset, celltype_labels) {
 
 Random Forest Algorithm
 ```{r}
-pairwise_random_forest <- function(reference_dataset, celltype_labels) {
+random_forest <- function(reference_dataset, celltype_labels) {
   #upsample minority class to make class frequencies equal
   reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
     pairwise_model <- ranger(celltype_labels ~ ., data = reference_dataset, num.trees = 500, classification = T, replace = T)
@@ -150,7 +150,7 @@ pairwise_random_forest <- function(reference_dataset, celltype_labels) {
 
 K nearest neighbors pairwise algorithm
 ```{r}
-pairwise_knn <- function(reference_dataset, celltype_labels) {
+knn <- function(reference_dataset, celltype_labels) {
   #upsample minority class to make class frequencies equal
     reference_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname = "celltype_labels")
     pairwise_model <- caret::knn3(celltype_labels ~ ., data = reference_dataset, k = 5)
@@ -440,7 +440,6 @@ GetModels <- function(marker_genes, ref_bpcells, ref_metadata, tree, metadata_cl
     expect_equal(marker_ge_pca$x %>% nrow(), length(cells_node_1) + length(cells_node_2))
   })
       }
-        
       
       #save pca loadings (contribution of each variable to each pc) to variable, to use for later prediction
       #get labels for each cell in the training dataset in order of how it appears 
@@ -549,7 +548,7 @@ predict_models <- function(model, model_name, nonsparse_mat) {
 
 
 ```{r}
-CreateEqualTree <- function(cell_labels, rootnode_name = "Broadclass") {
+CreateEqualTree <- function(cell_labels, rootnode_name = "Unmapped") {
   tree_newick_format <- paste0("(",str_c(unique(na.omit(cell_labels)), collapse = ","),")",rootnode_name,";") %>% .[!is.na(.)]
   read.newick(textConnection(tree_newick_format), node.label = "label") %>% as.treedata()
 }
