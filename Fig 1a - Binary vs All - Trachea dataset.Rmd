@@ -6,132 +6,300 @@ output: html_document
 ---
 
 Fig 1a - Using marker genes that differentiate two cell classes > marker genes that differentiate all cell classes, just try training normal ML classifiers using consensus approach on 1-vs-1 vs marker genes identified for 1-vs-all
-
-Load trachea seurat obj from Tabula Muris dataset
 ```{r}
 library(readr)
 library(rsample)
-annotations <- read.csv("../scmappr_paper_datasets/annotations_facs.csv") %>% dplyr::filter(tissue == "Marrow")
-marrow_ge <- read.csv("../scmappr_paper_datasets/FACS/Marrow-counts.csv")
-rownames(marrow_ge) <- marrow_ge$X
-marrow_ge %<>% select(-X)
-marrow_cell_ids <- marrow_ge %>% colnames()
-annotations <- annotations[match(marrow_ge %>% colnames(),annotations$cell),]
-celltype_anno <- annotations$cluster.ids
-#remove cells with na anno
-na_cells <- which(is.na(celltype_anno))
-celltype_anno <- celltype_anno[-na_cells]
-annotations <- annotations[-na_cells,]
-#subset marrow_ge to only include non-na anno
-marrow_ge <- marrow_ge[,-na_cells]
-#write bpcells for future use?
-```
-Convenience function for reading FACS-formatted TM files to bpcells in one command? 
-
-```{r}
-#split 80/20 train/test
-#get testing and training set in df form
-marrow_ge <- t(marrow_ge) %>% as.data.frame()
-marrow_ge$cluster.ids <- annotations$cluster.ids
-splits <- initial_split(marrow_ge, prop = .80, strata = cluster.ids, pool = 0)
-test.set <- splits %>% testing() 
-train.set <- splits %>% training()
-test.set <- test.set %>% select(-cluster.ids)
-train.set <- train.set %>% select(-cluster.ids)
-annotations.train.set <- annotations[match(rownames(train.set),annotations$cell),]
-annotations.test.set <- annotations[match(rownames(test.set),annotations$cell),]
-
-```
-
-```{r}
-train.set.bp <- train.set %>% t() %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix")
-test.set.bp <- test.set %>% t() %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix")
-
+library(dplyr)
+library(magrittr)
 ```
 
 
 ```{r}
-tree <- CreateEqualTree(annotations.train.set$cluster.ids)
-#only sampled 100 cells per class bc small # cells in many cell classes
-
-pairwise_markers <- FindMarkerGenes(ref_bpcells = train.set.bp, tree = tree, ref_metadata = annotations.train.set,metadata_cluster_column = "cluster.ids",n_cells_sampled = 100,metadata_cell_label_column = "cell")
+process_tm_csv_data <- function(annotations_csv, ge_csv, tissue_filter = NULL, prop_train = 0.8) {
+  # Read annotations CSV
+  annotations <- read.csv(annotations_csv)
+  
+  # Filter annotations based on tissue (changed non_myeloid)
+  annotations$tissue[annotations$tissue == "Brain_Non-Myeloid"] <- "Brain_Non_Myeloid"
+  annotations <- annotations %>% dplyr::filter(tissue == tissue_filter)
+  
+  
+  # Read gene expression CSV
+  tissue_ge <- read.csv(ge_csv)
+  rownames(tissue_ge) <- tissue_ge$X
+  tissue_ge %<>% dplyr::select(-X)
+  
+  # Subset annotations based on common cell IDs
+  tissue_ge_cell_ids <- colnames(tissue_ge)
+  annotations <- annotations[match(tissue_ge_cell_ids, annotations$cell),]
+  
+  # Extract cell type annotations
+  celltype_anno <- annotations$cluster.ids
+  
+  # Remove cells with NA annotations
+  na_cells <- which(is.na(celltype_anno))
+  celltype_anno <- celltype_anno[-na_cells]
+  annotations <- annotations[-na_cells,]
+  
+  # Subset tissue_ge to only include non-NA annotations
+  tissue_ge <- tissue_ge[, -na_cells]
+  
+  # Transpose gene expression data and convert to data frame
+  tissue_ge <- t(tissue_ge) %>% as.data.frame()
+  
+  # Add cluster.ids column to the data frame
+  tissue_ge$cluster.ids <- celltype_anno
+  
+  # Split data into training and testing sets
+  splits <- initial_split(tissue_ge, prop = prop_train, strata = cluster.ids, pool = 0)
+  train.set <- splits %>% training()
+  test.set <- splits %>% testing()
+  
+  # Extract cell annotations for training and testing sets
+  annotations.train.set <- annotations[match(rownames(train.set), annotations$cell),]
+  annotations.test.set <- annotations[match(rownames(test.set), annotations$cell),]
+  
+  # Convert training and testing sets to "bp" format
+  train.set.bp <- train.set %>% t() %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix")
+  test.set.bp <- test.set %>% t() %>% as("Matrix") %>% as("dgCMatrix") %>% as("IterableMatrix")
+  
+  # Create and return a list with the results
+  result_list <- list(
+    annotations_train_set = annotations.train.set,
+    annotations_test_set = annotations.test.set,
+    train_set_bp = train.set.bp,
+    test_set_bp = test.set.bp
+  )
+  
+  return(result_list)
+}
 
 ```
-Pairwise analysis 
+
+One v all - algorithms should be same implementation, except for ridge, lasse, EN
+-> changed to family = "multinomial"
+Lasso Regression Algorithm
 ```{r}
-#use getmodels function to create models, then subset to only include rf for this analysis
-pairwise_models <- GetModels(pairwise_markers, train.set.bp, annotations.train.set, tree, "cluster.ids", "cell", n_cells_sampled = 100, models_to_include = "elastic_net")
-#classify test set just using rf model
-#for each cell, choose the class with highest # wins (set prop_max_threshold to 0 to only choose the winningmost irrespective of other class scores for each cell)
-pairwise_classifications <- Classify(test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = 0)
-ground_truth_cluster_ids <- annotations.test.set$cluster.ids 
-names(ground_truth_cluster_ids) <- annotations.test.set$cell
-proportion_tied <- sum(pairwise_classifications == "Broadclass") / length(pairwise_classifications)
-tied_obs <- which(pairwise_classifications == "Broadclass")
-no_tie_cluster_ids <- ground_truth_cluster_ids[-tied_obs]
-no_tie_predicted_ids <- pairwise_classifications[-tied_obs]
-proportion_accurate_no_tie <- which(no_tie_predicted_ids == no_tie_cluster_ids) %>% length() / length(no_tie_cluster_ids)
-proportion_accurate_no_tie
+#glmnet package
+multinomial_lasso <- function(reference_dataset, celltype_labels) {
+    upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
+    celltype_labels <- upsampled_dataset[["y"]]
+    reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
+    pairwise_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "multinomial", alpha = 1)
+    pairwise_model
+}
 ```
 
 
+Ridge Regression algorithm
+```{r}
+#glmnet package
+multinomial_ridge <- function(reference_dataset, celltype_labels) {
+    upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
+    celltype_labels <- upsampled_dataset[["y"]]
+    reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
+    pairwise_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "multinomial", alpha = 0)
+    pairwise_model
+}
+```
+
+
+Elastic Net Algorithm
+```{r}
+#glmnet package
+multinomial_elastic_net <- function(reference_dataset, celltype_labels) {
+    upsampled_dataset <- upSample(x = reference_dataset, y = celltype_labels, yname =  "celltype_labels", list = T)
+    celltype_labels <- upsampled_dataset[["y"]]
+    reference_dataset <- upsampled_dataset[["x"]] %>% as.matrix()
+    pairwise_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "multinomial", alpha = .5)
+    pairwise_model
+}
+```
 
 One vs All Analysis 
+GetModelsOVA 
+Takes marker gene vector instead of list
 ```{r}
-#as done for pairwise marker gene determination, for all class marker gene determination,
-#1) Normalize reference atlas by reads-per-cell
-all_markers_ds <- multiply_cols(train.set.bp, 1/Matrix::colSums(train.set.bp))
-#2) Log normalization
-all_markers_ds <- log1p(all_markers_ds * 10000) # Log normalization
+GetModelsOVA <- function(marker_gene_vector, ref_bpcells, ref_metadata, metadata_cluster_column = "cluster_label", metadata_cell_label_column = "cell_label", models_to_include = NULL) {
+  
+  output_model_list <- vector(mode = "list", length = 10)
+  names(output_model_list) <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf")
+  function_list <- c(linear_svm,polynomial_svm,naive_bayes,multinomial_ridge,multinomial_lasso,multinomial_elastic_net,lda,knn,random_forest)
+  if(!is.null(output_model_list)) {
+    model_indices_to_keep <- which(names(output_model_list) %in% models_to_include)
+    output_model_list <- output_model_list[model_indices_to_keep]
+    function_list <- function_list[model_indices_to_keep]
+  }
+  
+    
+    
+   #1) Normalize reference atlas.
+  # Normalize by reads-per-cell
+  ref_bpcells <- multiply_cols(ref_bpcells, 1/Matrix::colSums(ref_bpcells))
+  
+  # Log normalization
+  ref_bpcells <- log1p(ref_bpcells * 10000) # Log normalization
+  #0) Create list with same overall structure in terms of names and matchups as marker genes. Just set value as NA for now. 
+  tipnodes <- tip.label(tree)
+  ref_bpcells %<>% t() %>%  write_matrix_dir(tempfile(), overwrite = T)
+  #onl include marker genes
+  subset_dataset <- ref_bpcells[,marker_gene_vector]
+  gene_level_stats <- matrix_stats(subset_dataset, col_stats = "variance")$col_stats
+  avg_log_exp <-  gene_level_stats["mean",]
+  #get stdev of each gene
+  stdev <- gene_level_stats["variance",] %>% sqrt()
+  #z-score dataset
+  subset_dataset <- subset_dataset %>% add_cols(-avg_log_exp) %>% multiply_cols(1/stdev)
+  marker_ge_pca <- prcomp(subset_dataset, center = F, rank = 10)
+  
+  test_that("Matched rows/annotations", {
+    expect_equal(ref_metadata[,metadata_cell_label_column], rownames(ref_bpcells))
+  })
+  
+  celltype_labels <- ref_metadata[,metadata_cluster_column] %>% as.factor() 
+  classification_model <- CreateAllModels_OVA(marker_ge_pca$x, celltype_labels, models_to_include)
+  model_list <- list()
+  model_list[["Model"]] <- classification_model
+  model_list[["avg_log_exp"]] <- avg_log_exp
+  model_list[["stdev"]] <- stdev
+  model_list[["pc_loadings"]] <- marker_ge_pca$rotation %>% t()
+  #return model_list
+  model_list
 
-all_class_markers <- marker_features(mat = all_markers_ds, groups = annotations.train.set$cluster.ids, method = "wilcoxon")
-#do same processing on all_class_markers as done in pairwise markers in FindMarkerGenes function
-all_class_markers %<>% dplyr::filter(foreground_mean > 1 |background_mean > 1) %>% dplyr::select(-background) %>% dplyr::distinct(feature, .keep_all = TRUE) %>% dplyr::mutate(log2_fc = log2(foreground_mean/background_mean))
-#get log2fc, and select the top marker genes with the highest abs value log2fc
-all_class_markers %<>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>% arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = 10, by = foreground) %>% pull(feature)
-# Create models
-#normalize by reads_per_cell
-train.set.all <- train.set.bp %>% t()
+}
+```
 
-train.set.all <- multiply_cols(train.set.all, 1/Matrix::colSums(train.set.all))
-# Log normalization
-train.set.all <- log1p(train.set.all * 10000) 
-#z-score
-train.set.all <- train.set.all[,all_class_markers]
-#get average expression and variance of each gene in log normalized space 
-gene_level_stats <- matrix_stats(train.set.all, col_stats = "variance")$col_stats
-avg_log_exp <-  gene_level_stats["mean",]
-#get stdev of each gene
-stdev <- gene_level_stats["variance",] %>% sqrt()
-#z-score dataset
-train.set.all <- train.set.all %>% add_cols(-avg_log_exp) %>% multiply_cols(1/stdev)
-#pca w/top 20 PCs, unlike 3 in pairwise
-marker_ge_pca <- prcomp(train.set.all, center = F, rank = 20)
-
-#create rf on upsampled dataset
-#make all classes have same probability, to better balance/better similarity to pairwise method
-train.set.upsampled <- marker_ge_pca$x %>% as.matrix()
-train.set.upsampled <- upSample(x = train.set.upsampled, y = annotations.train.set$cluster.ids %>% as.factor(), yname = "celltype_labels", list = T)
-celltype_labels <- train.set.upsampled[["y"]]
-reference_dataset <- train.set.upsampled[["x"]] %>% as.matrix()
-one_v_all_model <- cv.glmnet(x = reference_dataset, y = celltype_labels, family = "multinomial", alpha = .5) #can try grouped and not grouped
-#perform same transformations on test set, and z-score using train set m + sd
-test.set.all <- test.set.bp %>% t()
-
-test.set.all <- multiply_cols(test.set.all, 1/Matrix::colSums(test.set.all))
-# Log normalization
-test.set.all <- log1p(test.set.all * 10000) 
-#z-score using train set mean + stdev for everything
-test.set.all <- test.set.all[,all_class_markers]
-test.set.all <- test.set.all %>%
+```{r}
+Classify_OVA <- function(bpcells_query, model_list, model_name) {
+    # Normalize by reads-per-cell
+  bpcells_query <- multiply_cols(bpcells_query, 1 / Matrix::colSums(bpcells_query))
+  # Log normalization
+  bpcells_query <- log1p(bpcells_query * 10000) # Log normalization
+  # save to disk to make it quick
+  classification_model <- model_list[["Model"]] 
+  avg_log_exp <- model_list[["avg_log_exp"]] 
+  stdev <- model_list[["stdev"]] 
+  pc_loadings <- model_list$pc_loadings
+  markers <- pc_loadings %>% colnames()
+  bpcells_query <- bpcells_query[markers,] %>% t()
+  bpcells_query <- bpcells_query %>%
         add_cols(-avg_log_exp) %>%
         multiply_cols(1 / stdev)
-pc_loadings <- marker_ge_pca$rotation
-# transform data using matrix multiplication operator %*%
-test.set.all <- test.set.all %*% pc_loadings
-test.set.all <- test.set.all %>% as.matrix()
-predicted.classifications.all <- predict(one_v_all_model, test.set.all, s = "lambda.1se", type = "class") %>% as.character() %>% set_names(rownames(nonsparse_mat)) 
-proportion_accurate_multi <- which(predicted.classifications.all == ground_truth_cluster_ids) %>% length() / length(ground_truth_cluster_ids)
-proportion_accurate_multi
+  pc_loadings %<>% t()
+  query_transformed <- bpcells_query %*% pc_loadings %>% as.matrix()
+  predict_models_OVA(model = classification_model, model_name = model_name, nonsparse_mat = query_transformed)
+}
 ```
-Looked like for cv.glmnet it worked fine with or without the thing (.92 vs .9, no difference)
+
+```{r}
+predict_models_OVA <- function(model, model_name, nonsparse_mat) {
+  if (model_name %in% c("ridge", "lasso", "elastic_net")) {
+    predict(model, nonsparse_mat, s = "lambda.1se", type = "class") %>% .[[1]] %>%  as.character() %>% set_names(rownames(nonsparse_mat)) %>%  return()
+  } else if (model_name %in% c("lda", "qda")){ 
+    predict(model,nonsparse_mat %>% as.data.frame())$lda$class %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  } else if (model_name %in% c("knn")){ 
+    model %>% predict(nonsparse_mat %>% as.data.frame(), type = "class") %>% .$knn %>%  as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  }  else if (model_name %in% c("rf")){ 
+    model %>% predict(nonsparse_mat, type = "response") %>% .$rf %>% .$predictions %>%  as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  } else {
+    predict(model, nonsparse_mat) %>% .[[1]] %>% as.character() %>% set_names(rownames(nonsparse_mat)) %>% return()
+  }
+}
+```
+
+```{r}
+# Function to compare OVO and OVA classification accuracy
+compare_classification_accuracy <- function(annotations_csv, ge_csv, tissue_filter = NULL, prop_train = 0.8,n_marker_genes = 5) {
+  # Process data and split into training and testing sets
+  data_list <- process_tm_csv_data(annotations_csv, ge_csv, tissue_filter, prop_train)
+
+  # Extract necessary variables
+  annotations.train.set <- data_list$annotations_train_set
+  annotations.test.set <- data_list$annotations_test_set
+  train.set.bp <- data_list$train_set_bp
+  test.set.bp <- data_list$test_set_bp
+
+  # Perform pairwise analysis (OVO)
+  tree <- CreateEqualTree(annotations.train.set$cluster.ids)
+  pairwise_markers <- FindMarkerGenes(ref_bpcells = train.set.bp, tree = tree, ref_metadata = annotations.train.set, metadata_cluster_column = "cluster.ids", n_cells_sampled = 100, metadata_cell_label_column = "cell",n_genes = n_marker_genes)
+
+  # Iterate over each model for OVO
+  models <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf")
+  model_results <- matrix(NA, nrow = ncol(test.set.bp), ncol = length(models)) %>% as.data.frame()
+  colnames(model_results) <- models
+  rownames(model_results) <- colnames(test.set.bp)
+  for (i in 1:length(models)) {
+    cur_model <- models[i]
+    pairwise_models <- GetModels(pairwise_markers, train.set.bp, annotations.train.set, tree, "cluster.ids", "cell", n_cells_sampled = 100, models_to_include = cur_model)
+    model_results[, i] <- Classify(test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = 0)
+  }
+
+  # Perform OVA analysis
+  all_markers_ds <- multiply_cols(train.set.bp, 1/Matrix::colSums(train.set.bp))
+  all_markers_ds <- log1p(all_markers_ds * 10000)
+
+  all_class_markers <- marker_features(mat = all_markers_ds, groups = annotations.train.set$cluster.ids, method = "wilcoxon")
+  all_class_markers <- all_class_markers %>% filter(foreground_mean > 1 | background_mean > 1) %>% dplyr::select(-background) %>% distinct(feature, .keep_all = TRUE) %>% mutate(log2_fc = log2(foreground_mean/background_mean))
+  all_class_markers <- all_class_markers %>% mutate(abs_log2_fc = log2(foreground_mean/background_mean) %>% abs()) %>%
+    arrange(abs_log2_fc) %>% slice_max(abs_log2_fc, n = n_marker_genes, by = foreground) %>% pull(feature)
+
+  # Iterate over each model for OVA
+  one_v_all_models <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf")
+  one_v_all_model_results <- matrix(NA, nrow = ncol(test.set.bp), ncol = length(models)) %>% as.data.frame()
+  colnames(one_v_all_model_results) <- one_v_all_models
+  rownames(one_v_all_model_results) <- colnames(test.set.bp)
+
+  for (i in 1:length(one_v_all_models)) {
+    cur_model <- one_v_all_models[i]
+    one_v_all_model <- GetModelsOVA(marker_gene_vector = all_class_markers, ref_bpcells = train.set.bp,ref_metadata = annotations.train.set, metadata_cluster_column = "cluster.ids",metadata_cell_label_column = "cell", models_to_include = cur_model)
+    one_v_all_model_results[, i] <- Classify_OVA(bpcells_query = test.set.bp, model_list = one_v_all_model, model_name = cur_model)
+  }
+
+  # Function to calculate accuracy
+  acc_func <- function(predicted_classifications, ground_truth_cluster_ids) {
+    sum(predicted_classifications == ground_truth_cluster_ids) / length(ground_truth_cluster_ids)
+  }
+
+  # Calculate accuracy for both OVO and OVA
+  ovo_accuracy <- apply(model_results, MARGIN = 2, acc_func, annotations.test.set$cluster.ids)
+  ova_accuracy <- apply(one_v_all_model_results, MARGIN = 2, acc_func, annotations.test.set$cluster.ids)
+
+  # Create and return a data frame with accuracy results
+  result_df <- data.frame(Model = models, OVO_Accuracy = ovo_accuracy, OVA_Accuracy = ova_accuracy, dataset = tissue_filter)
+  return(result_df)
+}
+```
+
+
+
+```{r}
+directory_path <- "../scmappr_paper_datasets/FACS/"
+file_names <- list.files(directory_path)
+tissues <- character(length(file_names))
+# Loop through each file name and extract the first word
+for (i in seq_along(file_names)) {
+  # Extract the first word from the file name (assuming words are separated by "_")
+  first_word <- strsplit(file_names[i], "-")[[1]][1]
+  
+  # Store the first word in the vector
+  tissues[i] <- first_word
+}
+
+marker_gene_nums <- seq(5,100,5)
+marker_gene_num_acc <- vector(mode = "list", length = length(marker_gene_nums))
+names(marker_gene_num_acc) <- marker_gene_nums %>% as.character()
+for (j in 1:length(marker_gene_nums)) {
+  num_markers = marker_gene_nums[j]
+  result_list <- vector(mode = "list", length = length(tissues))
+  names(result_list) <- tissues
+  for (i in 1:length(tissues)) {
+    cur_ge_csv = paste0("../scmappr_paper_datasets/FACS/",tissues[i],"-counts.csv")
+    cur_tissue = tissues[i]
+    result_list[[i]] <- compare_classification_accuracy(annotations_csv = "../scmappr_paper_datasets/annotations_facs.csv", ge_csv = cur_ge_csv, tissue_filter = cur_tissue, prop_train = .8, n_marker_genes = num_markers)
+  }
+  full_list <- do.call("rbind", result_list)
+  marker_gene_num_acc[[j]] <- full_list
+  gc()
+}
+```
+
