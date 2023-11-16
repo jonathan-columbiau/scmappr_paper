@@ -140,7 +140,6 @@ GetModelsOVA <- function(marker_gene_vector, ref_bpcells, ref_metadata, metadata
   # Log normalization
   ref_bpcells <- log1p(ref_bpcells * 10000) # Log normalization
   #0) Create list with same overall structure in terms of names and matchups as marker genes. Just set value as NA for now. 
-  tipnodes <- tip.label(tree)
   ref_bpcells %<>% t() %>%  write_matrix_dir(tempfile(), overwrite = T)
   #onl include marker genes
   subset_dataset <- ref_bpcells[,marker_gene_vector]
@@ -167,6 +166,27 @@ GetModelsOVA <- function(marker_gene_vector, ref_bpcells, ref_metadata, metadata
   model_list
 
 }
+```
+
+CreateAllModels_OVA <- function()
+```{r}
+CreateAllModels_OVA <- function(reference_dataset, celltype_labels, models_to_include = NULL) {
+  output_model_list <- vector(mode = "list", length = 10)
+  names(output_model_list) <- c("linear_svm", "polynomial_svm", "naive_bayes", "ridge", "lasso", "elastic_net", "lda", "knn", "rf")
+  function_list <- c(linear_svm,polynomial_svm,naive_bayes,multinomial_ridge,multinomial_lasso,multinomial_elastic_net,lda,knn,random_forest)
+  if(!is.null(output_model_list)) {
+    model_indices_to_keep <- which(names(output_model_list) %in% models_to_include)
+    output_model_list <- output_model_list[model_indices_to_keep]
+    function_list <- function_list[model_indices_to_keep]
+  }
+  for (i in 1:length(function_list)) {
+    model <- function_list[[i]](reference_dataset, celltype_labels)
+    output_model_list[[i]] <- model
+  }
+  #return the list of models
+  output_model_list
+}
+
 ```
 
 ```{r}
@@ -209,7 +229,7 @@ predict_models_OVA <- function(model, model_name, nonsparse_mat) {
 
 ```{r}
 # Function to compare OVO and OVA classification accuracy
-compare_classification_accuracy <- function(annotations_csv, ge_csv, tissue_filter = NULL, prop_train = 0.8,n_marker_genes = 5) {
+compare_classification_accuracy <- function(annotations_csv, ge_csv, tissue_filter = NULL, prop_train = 0.8,n_marker_genes = 5, consensus_prop = NULL) {
   # Process data and split into training and testing sets
   data_list <- process_tm_csv_data(annotations_csv, ge_csv, tissue_filter, prop_train)
 
@@ -231,7 +251,15 @@ compare_classification_accuracy <- function(annotations_csv, ge_csv, tissue_filt
   for (i in 1:length(models)) {
     cur_model <- models[i]
     pairwise_models <- GetModels(pairwise_markers, train.set.bp, annotations.train.set, tree, "cluster.ids", "cell", n_cells_sampled = 100, models_to_include = cur_model)
-    model_results[, i] <- Classify(test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = 0)
+    if(is.null(consensus_prop)) {
+        model_results[, i] <- Classify(bpcells_query = test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = 0)
+    } else {
+      model_results[,i] <- Classify(bpcells_query =  test.set.bp, models = pairwise_models, tree_struc = tree, prop_max_threshold = consensus_prop)
+bpcells_query = test.set.bp
+      
+      
+    }
+    
   }
 
   # Perform OVA analysis
@@ -256,13 +284,18 @@ compare_classification_accuracy <- function(annotations_csv, ge_csv, tissue_filt
   }
 
   # Function to calculate accuracy
-  acc_func <- function(predicted_classifications, ground_truth_cluster_ids) {
+  acc_func_no_unmapped <- function(predicted_classifications, ground_truth_cluster_ids) {
+    unmapped_ids <- which(predicted_classifications == "Unmapped")
+    if(length(unmapped_ids) != 0) {
+      predicted_classifications <- predicted_classifications[-unmapped_ids]
+      ground_truth_cluster_ids <- ground_truth_cluster_ids[-unmapped_ids]
+    }
     sum(predicted_classifications == ground_truth_cluster_ids) / length(ground_truth_cluster_ids)
   }
 
   # Calculate accuracy for both OVO and OVA
-  ovo_accuracy <- apply(model_results, MARGIN = 2, acc_func, annotations.test.set$cluster.ids)
-  ova_accuracy <- apply(one_v_all_model_results, MARGIN = 2, acc_func, annotations.test.set$cluster.ids)
+  ovo_accuracy <- apply(model_results, MARGIN = 2, acc_func_no_unmapped, annotations.test.set$cluster.ids)
+  ova_accuracy <- apply(one_v_all_model_results, MARGIN = 2, acc_func_no_unmapped, annotations.test.set$cluster.ids)
 
   # Create and return a data frame with accuracy results
   result_df <- data.frame(Model = models, OVO_Accuracy = ovo_accuracy, OVA_Accuracy = ova_accuracy, dataset = tissue_filter)
@@ -284,8 +317,11 @@ for (i in seq_along(file_names)) {
   # Store the first word in the vector
   tissues[i] <- first_word
 }
+```
 
-marker_gene_nums <- seq(5,100,5)
+Single Method OVO vs OVA test - No Consensus Threshold 
+```{r}
+marker_gene_nums <- seq(5,40,5)
 marker_gene_num_acc <- vector(mode = "list", length = length(marker_gene_nums))
 names(marker_gene_num_acc) <- marker_gene_nums %>% as.character()
 for (j in 1:length(marker_gene_nums)) {
@@ -295,11 +331,79 @@ for (j in 1:length(marker_gene_nums)) {
   for (i in 1:length(tissues)) {
     cur_ge_csv = paste0("../scmappr_paper_datasets/FACS/",tissues[i],"-counts.csv")
     cur_tissue = tissues[i]
-    result_list[[i]] <- compare_classification_accuracy(annotations_csv = "../scmappr_paper_datasets/annotations_facs.csv", ge_csv = cur_ge_csv, tissue_filter = cur_tissue, prop_train = .8, n_marker_genes = num_markers)
+    result_list[[i]] <- compare_classification_accuracy(annotations_csv = "../scmappr_paper_datasets/annotations_facs.csv", ge_csv = cur_ge_csv, tissue_filter = cur_tissue, prop_train = .8, n_marker_genes = num_markers, consensus_prop = 0)
   }
   full_list <- do.call("rbind", result_list)
   marker_gene_num_acc[[j]] <- full_list
   gc()
 }
+saveRDS(marker_gene_num_acc, "marker_gene_acc_no_cons.rds")
+acc_res <- readRDS("marker_gene_acc_no_cons.rds")
+acc_res <- acc_res[1:8]
+for(i in 1:length(acc_res)) {
+  acc_res[[i]]$num_markers <- names(acc_res)[i]
+}
+
+acc_res_df <- do.call("rbind", acc_res)
+acc_res_df$Consensus_Applied <- "None"
+acc_res_df$acc_diff <- acc_res_df$OVO_Accuracy - acc_res_df$OVA_Accuracy
+acc_res_df$acc_diff_percent <- acc_res_df$acc_diff * 100
+acc_res_df$num_markers %<>% as.numeric()
 ```
+
+
+```{r}
+#plot 1
+ggplot(acc_res_df, aes(x = num_markers %>% as.numeric(), y = acc_diff_percent, color = Model)) +
+  geom_point() +  # Scatterplot
+  facet_wrap(~ dataset, scales = "fixed") +  # Facet by the dataset variable with fixed scales
+  theme_bw() +# Black and white theme
+  xlab("Number of Marker Genes") + 
+  ylab("Percent Accuracy Difference (Pairwise vs Multiclass)") +
+  ggtitle("Accuracy of Pairwise vs Multiclass with Different Number of Marker Genes")
+#plot 2
+ggplot(acc_res_df, aes(x = num_markers %>% as.numeric(), y = OVO_Accuracy * 100, color = Model)) +
+  geom_point() +  # Scatterplot
+  facet_wrap(~ dataset, scales = "fixed") +  # Facet by the dataset variable with fixed scales
+  theme_bw() +# Black and white theme
+  xlab("Number of Marker Genes") + 
+  ylab("Pairwise Accuracy") +
+  ggtitle("Pairwise Accuracy with Different Number of Marker Genes")
+
+
+
+#plot 3
+```
+
+
+Single Method OVO vs OVA test - Consensus from 0.6 - 1.0 by 0.1
+```{r}
+marker_gene_nums <- seq(10,40,10)
+marker_gene_num_acc <- vector(mode = "list", length = length(marker_gene_nums))
+names(marker_gene_num_acc) <- marker_gene_nums %>% as.character()
+for (j in 1:length(marker_gene_nums)) {
+  num_markers = marker_gene_nums[j]
+  result_list <- vector(mode = "list", length = length(tissues))
+  names(result_list) <- tissues
+  for (i in 1:length(tissues)) {
+    cur_ge_csv = paste0("../scmappr_paper_datasets/FACS/",tissues[i],"-counts.csv")
+    cur_tissue = tissues[i]
+    result_list[[i]] <- compare_classification_accuracy(annotations_csv = "../scmappr_paper_datasets/annotations_facs.csv", ge_csv = cur_ge_csv, tissue_filter = cur_tissue, prop_train = .8, n_marker_genes = num_markers, consensus_prop = .9)
+  }
+  full_list <- do.call("rbind", result_list)
+  marker_gene_num_acc[[j]] <- full_list
+  gc()
+}
+saveRDS(marker_gene_num_acc, "marker_gene_acc.rds")
+acc_res <- readRDS("marker_gene_acc.rds")
+acc_res <- acc_res[1:8]
+for(i in 1:length(acc_res)) {
+  acc_res[[i]]$num_markers <- names(acc_res)[i]
+}
+acc_res_df <- do.call("rbind", acc_res)
+acc_res_df$Consensus_Applied <- "None"
+
+```
+
+
 

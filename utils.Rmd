@@ -603,7 +603,7 @@ Classify <- function(bpcells_query, models, tree_struc, prop_max_threshold = .66
     }
     #count_threshold <- (str_count(names(models[[node]]), pattern = names(models[[node]])[1] %>% word()) %>% sum()) * 10 * .66 #2/3 of max score (num unique matchups for a class - 1)*10
     
-    count_threshold <- (child(tree_struc,node) %>% length() - 1) * 10 * prop_max_threshold #2/3 of max score (num matchups for each class - 1)*10
+    count_threshold <- (child(tree_struc,node) %>% length() - 1) * length(models[[1]][[1]][["Models"]]) * prop_max_threshold #2/3 of max score (num matchups for each class - 1)*num models per pairwise comparison
 
     obs_above_threshold <- res_list %>%
       plyr::rbind.fill.matrix(res_list) %>%
